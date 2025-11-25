@@ -1,15 +1,4 @@
-"""Download the fixed set of LoRAs into the Network Volume.
-
-Usage:
-  python fetch_fixed_loras.py --dest /runpod-volume/loras --max-mb 1024 --parallel 4
-
-Defaults:
-  dest = /runpod-volume/loras
-  max_mb = 1024
-  parallel = 4
-
-The script is idempotent: existing files with the same target name are skipped.
-"""
+"""Download the fixed set of LoRAs into the Network Volume (idempotent)."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +7,18 @@ import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
+
+
+def _detect_volume_root() -> str:
+    candidates = ["/runpod-volume", "/workspace", "/data", os.getcwd()]
+    for c in candidates:
+        try:
+            if os.path.isdir(c) and os.access(c, os.W_OK):
+                return c
+        except Exception:
+            continue
+    return os.getcwd()
+
 
 # Fixed LoRA list: (target_filename_without_ext, url)
 LORAS: List[Tuple[str, str]] = [
@@ -32,7 +33,7 @@ LORAS: List[Tuple[str, str]] = [
 ]
 
 
-def download(url: str, dest_path: str, max_bytes: int, timeout: int = 600) -> str:
+def download(url: str, dest_path: str, max_bytes: int, timeout: int = 900) -> str:
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
     if os.path.exists(dest_path):
@@ -61,9 +62,14 @@ def download(url: str, dest_path: str, max_bytes: int, timeout: int = 600) -> st
 
 
 def main():
+    volume_root = _detect_volume_root()
     parser = argparse.ArgumentParser(description="Download fixed LoRAs to volume")
-    parser.add_argument("--dest", default="/runpod-volume/loras", help="Destination directory for .safetensors")
-    parser.add_argument("--max-mb", type=int, default=1024, help="Maximum allowed size per file (MB)")
+    parser.add_argument(
+        "--dest",
+        default=os.path.join(volume_root, "loras"),
+        help="Destination directory for .safetensors",
+    )
+    parser.add_argument("--max-mb", type=int, default=5120, help="Maximum allowed size per file (MB)")
     parser.add_argument("--parallel", type=int, default=4, help="Number of concurrent downloads")
     args = parser.parse_args()
 
@@ -75,11 +81,9 @@ def main():
             dest_path = os.path.join(args.dest, f"{name}.safetensors")
             tasks.append(executor.submit(download, url, dest_path, max_bytes))
 
-        results = []
         for (name, _), future in zip(LORAS, as_completed(tasks)):
             try:
                 status = future.result()
-                results.append((name, status))
                 print(f"[{status}] {name}")
             except Exception as exc:
                 print(f"[failed] {name}: {exc}", file=sys.stderr)

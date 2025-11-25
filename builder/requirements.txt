@@ -1,11 +1,11 @@
 runpod==1.6.0
 torch==2.2.0
-diffusers==0.30.0
-transformers==4.44.0
-accelerate==0.33.0
-safetensors==0.4.2
-peft==0.12.0
+diffusers==0.35.2
+transformers==4.57.1
+accelerate==1.12.0
+safetensors==0.7.0
+peft==0.18.0
 sentencepiece==0.2.0
 xformers==0.0.24
-Pillow==10.4.0
+Pillow==12.0.0
 scipy==1.12.0
