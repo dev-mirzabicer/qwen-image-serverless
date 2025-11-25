@@ -6,7 +6,7 @@ import os
 import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 
 def _detect_volume_root() -> str:
@@ -33,13 +33,21 @@ LORAS: List[Tuple[str, str]] = [
 ]
 
 
-def download(url: str, dest_path: str, max_bytes: int, timeout: int = 900) -> str:
+def _headers_for(url: str, token: str | None) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    if token and url.startswith("https://huggingface.co/"):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def download(url: str, dest_path: str, max_bytes: int, timeout: int = 900, token: str | None = None) -> str:
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
     if os.path.exists(dest_path):
         return "skipped"
 
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    req = urllib.request.Request(url, headers=_headers_for(url, token))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         length = resp.getheader("Content-Length")
         if length and int(length) > max_bytes:
             raise ValueError(f"File too large: {length} bytes > limit {max_bytes}")
@@ -71,23 +79,35 @@ def main():
     )
     parser.add_argument("--max-mb", type=int, default=5120, help="Maximum allowed size per file (MB)")
     parser.add_argument("--parallel", type=int, default=4, help="Number of concurrent downloads")
+    parser.add_argument(
+        "--hf-token",
+        default=os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_HOME_TOKEN"),
+        help="Hugging Face token for gated/private LoRAs (read access). Can also be set via HF_TOKEN env.",
+    )
     args = parser.parse_args()
 
     max_bytes = args.max_mb * 1024 * 1024
 
     tasks = []
+    failures: List[Tuple[str, str]] = []
     with ThreadPoolExecutor(max_workers=max(args.parallel, 1)) as executor:
         for name, url in LORAS:
             dest_path = os.path.join(args.dest, f"{name}.safetensors")
-            tasks.append(executor.submit(download, url, dest_path, max_bytes))
+            tasks.append(executor.submit(download, url, dest_path, max_bytes, token=args.hf_token))
 
         for (name, _), future in zip(LORAS, as_completed(tasks)):
             try:
                 status = future.result()
                 print(f"[{status}] {name}")
             except Exception as exc:
+                failures.append((name, str(exc)))
                 print(f"[failed] {name}: {exc}", file=sys.stderr)
-                sys.exit(1)
+
+    if failures:
+        print("\nCompleted with failures:")
+        for name, err in failures:
+            print(f" - {name}: {err}")
+        sys.exit(1)
 
     print("Done. Files in:", args.dest)
 
