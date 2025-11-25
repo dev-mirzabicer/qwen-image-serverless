@@ -16,6 +16,43 @@ class LoraManager:
     def __init__(self, pipe, fixed_adapters: Iterable[str]):
         self.pipe = pipe
         self.fixed_adapters = set(fixed_adapters)
+        self.block_name, self.attn_name = self._detect_model_structure()
+        logger.info(
+            "Detected model structure",
+            extra={"ctx_block": self.block_name, "ctx_attn": self.attn_name},
+        )
+
+    def _detect_model_structure(self) -> Tuple[str, str]:
+        transformer = getattr(self.pipe, "transformer", None)
+        if transformer is None:
+            return "transformer_blocks", "attn1"
+
+        # Determine block collection name
+        if hasattr(transformer, "blocks"):
+            block_name = "blocks"
+            blocks = transformer.blocks
+        elif hasattr(transformer, "layers"):
+            block_name = "layers"
+            blocks = transformer.layers
+        elif hasattr(transformer, "transformer_blocks"):
+            block_name = "transformer_blocks"
+            blocks = transformer.transformer_blocks
+        else:
+            block_name = "transformer_blocks"
+            blocks = []
+
+        # Determine attention submodule name
+        attn_name = "attn1"
+        if len(blocks) > 0:
+            b0 = blocks[0]
+            if hasattr(b0, "attn"):
+                attn_name = "attn"
+            elif hasattr(b0, "self_attn"):
+                attn_name = "self_attn"
+            elif hasattr(b0, "attention"):
+                attn_name = "attention"
+
+        return block_name, attn_name
 
     def activate(self, loras: Dict[str, float]) -> Tuple[List[str], List[str]]:
         """Activate requested LoRAs. Returns (active_names, temp_names)."""
@@ -43,7 +80,9 @@ class LoraManager:
                     require_https=CFG.require_https_for_lora,
                 )
                 try:
-                    state_dict = load_sanitized_lora_state_dict(result.path)
+                    state_dict = load_sanitized_lora_state_dict(
+                        result.path, block_name=self.block_name, attn_name=self.attn_name
+                    )
                     self.pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
                     # verify registration
                     if not (hasattr(self.pipe, "peft_config") and adapter_name in self.pipe.peft_config):
@@ -67,7 +106,9 @@ class LoraManager:
                 candidate_path = f"{CFG.lora_dir}/{name}.safetensors"
                 if os.path.isfile(candidate_path):
                     try:
-                        state_dict = load_sanitized_lora_state_dict(candidate_path)
+                        state_dict = load_sanitized_lora_state_dict(
+                            candidate_path, block_name=self.block_name, attn_name=self.attn_name
+                        )
                         self.pipe.load_lora_weights(state_dict, adapter_name=name)
                         if not (hasattr(self.pipe, "peft_config") and name in self.pipe.peft_config):
                             raise ValueError("Adapter not registered in peft_config after load")

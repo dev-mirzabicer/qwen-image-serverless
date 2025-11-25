@@ -60,32 +60,64 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
         except Exception as exc:
             logger.warning("xFormers attention could not be enabled", extra={"ctx_error": str(exc)})
 
+    # Inspect model structure for logging and alignment
+    try:
+        if hasattr(pipe, "transformer"):
+            sample_keys = list(pipe.transformer.state_dict().keys())[:10]
+            logger.info("Transformer sample keys", extra={"ctx_keys": sample_keys})
+    except Exception as e:
+        logger.warning("Failed to inspect model structure", extra={"ctx_error": str(e)})
+
     fixed_names: List[str] = []
+    failed_adapters: List[str] = []
     if os.path.isdir(CFG.lora_dir):
         lora_files = list_safetensors(CFG.lora_dir)
         logger.info(
             "Loading fixed LoRAs", extra={"ctx_count": len(lora_files), "ctx_dir": CFG.lora_dir}
         )
-        failed_adapters = []
+        # detect structure similar to LoraManager
+        block_name = "transformer_blocks"
+        attn_name = "attn1"
+        tr = getattr(pipe, "transformer", None)
+        blocks = []
+        if tr is not None:
+            if hasattr(tr, "blocks"):
+                block_name = "blocks"
+                blocks = tr.blocks
+            elif hasattr(tr, "layers"):
+                block_name = "layers"
+                blocks = tr.layers
+            elif hasattr(tr, "transformer_blocks"):
+                block_name = "transformer_blocks"
+                blocks = tr.transformer_blocks
+            if len(blocks) > 0:
+                b0 = blocks[0]
+                if hasattr(b0, "attn"):
+                    attn_name = "attn"
+                elif hasattr(b0, "self_attn"):
+                    attn_name = "self_attn"
+                elif hasattr(b0, "attention"):
+                    attn_name = "attention"
+        logger.info(
+            "Detected structure for fixed LoRA loading",
+            extra={"ctx_block": block_name, "ctx_attn": attn_name},
+        )
+
         for file_name in lora_files:
             adapter_name = os.path.splitext(file_name)[0]
             path = os.path.join(CFG.lora_dir, file_name)
-            loaded = False
-            last_exc = None
             try:
-                state_dict = load_sanitized_lora_state_dict(path)
+                state_dict = load_sanitized_lora_state_dict(
+                    path, block_name=block_name, attn_name=attn_name
+                )
                 pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
-                loaded = True
-            except Exception as exc:
-                last_exc = exc
-            if loaded:
                 fixed_names.append(adapter_name)
-            else:
+            except Exception as exc:
                 logger.error(
                     "Failed to load fixed LoRA",
                     extra={
                         "ctx_adapter": adapter_name,
-                        "ctx_error": str(last_exc),
+                        "ctx_error": str(exc),
                         "ctx_path": path,
                     },
                 )

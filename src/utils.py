@@ -42,14 +42,18 @@ def image_to_base64_png(image: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def load_sanitized_lora_state_dict(path: str) -> Dict[str, Any]:
+def load_sanitized_lora_state_dict(
+    path: str,
+    block_name: str = "transformer_blocks",
+    attn_name: str = "attn1",
+) -> Dict[str, Any]:
     """
-    Aggressively sanitize LoRA keys to match Diffusers QwenImageTransformer2DModel structure.
-    Handles:
-      - diffusion_model.transformer_blocks.*   -> transformer.transformer_blocks.*
-      - transformer_blocks_29_attn_to_v       -> transformer.transformer_blocks.29.attn1.to_v
-      - model.layers.N.self_attn.q_proj       -> transformer.transformer_blocks.N.attn1.to_q
-      - attn.* to attn1.* where needed
+    Sanitize LoRA keys to match the specific Diffusers model structure.
+
+    Args:
+        path: Path to safetensors file.
+        block_name: The name of the layer list in the model (e.g., 'transformer_blocks' or 'blocks').
+        attn_name: The name of the self-attention module (e.g., 'attn1' or 'attn').
     """
     state_dict = load_safetensors_file(path, device="cpu")
     new_state_dict: Dict[str, Any] = {}
@@ -57,37 +61,49 @@ def load_sanitized_lora_state_dict(path: str) -> Dict[str, Any]:
     for key, value in state_dict.items():
         new_key = key
 
-        # Phase 1: strip wrappers
+        # Phase 1: Strip common wrappers
         new_key = new_key.replace("base_model.model.", "")
         new_key = new_key.replace("lora_unet_", "")
 
-        # Phase 2: structural renaming
-        if new_key.startswith("diffusion_model."):
-            new_key = new_key.replace("diffusion_model.", "transformer.")
+        # Phase 2: Structural renaming (Qwen2-VL -> Diffusers DiT)
 
-        # underscore flattening -> dotted indices
-        new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
-
-        # LLM native mapping
+        # Map 'model.layers' (LLM) to 'transformer.{block_name}'
         if new_key.startswith("model.layers."):
-            new_key = new_key.replace("model.layers.", "transformer.transformer_blocks.")
-            new_key = new_key.replace("self_attn.q_proj", "attn1.to_q")
-            new_key = new_key.replace("self_attn.k_proj", "attn1.to_k")
-            new_key = new_key.replace("self_attn.v_proj", "attn1.to_v")
-            new_key = new_key.replace("self_attn.o_proj", "attn1.to_out.0")
+            new_key = new_key.replace("model.layers.", f"transformer.{block_name}.")
 
-        # Phase 3: component alignment
-        if ".attn." in new_key:
-            new_key = new_key.replace(".attn.", ".attn1.")
-        if "_attn_to_" in new_key:
-            new_key = new_key.replace("_attn_to_", ".attn1.to_")
+            # Map attention projections
+            new_key = new_key.replace("self_attn.q_proj", f"{attn_name}.to_q")
+            new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
+            new_key = new_key.replace("self_attn.v_proj", f"{attn_name}.to_v")
+            new_key = new_key.replace("self_attn.o_proj", f"{attn_name}.to_out.0")
 
-        if new_key.startswith("transformer_blocks."):
+            # Basic MLP remap (best-effort; DiT often uses ff.net.*)
+            new_key = new_key.replace("mlp.gate_proj", "ff.net.0.proj")
+            new_key = new_key.replace("mlp.up_proj", "ff.net.0.proj")
+            new_key = new_key.replace("mlp.down_proj", "ff.net.2")
+
+        # Map 'diffusion_model.transformer_blocks' -> 'transformer.{block_name}'
+        elif new_key.startswith("diffusion_model.transformer_blocks."):
+            new_key = new_key.replace("diffusion_model.transformer_blocks.", f"transformer.{block_name}.")
+
+        # Map 'layers.' -> 'transformer.{block_name}.'
+        elif new_key.startswith("layers."):
+            new_key = new_key.replace("layers.", f"transformer.{block_name}.")
+
+        # Phase 3: Component alignment
+        if ".attn." in new_key and attn_name != "attn":
+            new_key = new_key.replace(".attn.", f".{attn_name}.")
+
+        if "transformer_blocks." in new_key and block_name != "transformer_blocks":
+            new_key = new_key.replace("transformer_blocks.", f"{block_name}.")
+
+        if new_key.startswith(f"{block_name}."):
             new_key = f"transformer.{new_key}"
-        if new_key.startswith("layers."):
-            new_key = f"transformer.transformer_blocks.{new_key[7:]}"
 
-        # Ensure CPU tensors
+        # Drop non-standard additive projections that often cause unexpected key errors
+        if "add_k_proj" in new_key or "add_q_proj" in new_key or "add_v_proj" in new_key:
+            continue
+
         new_state_dict[new_key] = value.cpu() if isinstance(value, torch.Tensor) else value
 
     return new_state_dict
@@ -110,9 +126,8 @@ def download_file(
 
     with urllib.request.urlopen(url, timeout=timeout) as response:
         content_length = response.getheader("Content-Length")
-        if content_length is not None:
-            if int(content_length) > max_bytes:
-                raise ValueError("External LoRA exceeds configured size limit")
+        if content_length is not None and int(content_length) > max_bytes:
+            raise ValueError("External LoRA exceeds configured size limit")
         with open(destination_path, "wb") as f:
             total = 0
             while True:
