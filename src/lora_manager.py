@@ -42,7 +42,21 @@ class LoraManager:
                     timeout=CFG.external_lora_timeout,
                     require_https=CFG.require_https_for_lora,
                 )
-                self.pipe.load_lora_weights(result.path, adapter_name=adapter_name, lora_prefix=None)
+                loaded = False
+                for prefix in (None, "transformer"):
+                    try:
+                        self.pipe.load_lora_weights(
+                            result.path, adapter_name=adapter_name, lora_prefix=prefix
+                        )
+                        loaded = True
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                if not loaded:
+                    raise ValueError(
+                        f"External LoRA '{name}' failed to load: {last_exc}"
+                    ) from last_exc
+
                 active_names.append(adapter_name)
                 temp_names.append(adapter_name)
                 logger.info(
@@ -58,8 +72,17 @@ class LoraManager:
                 # Try lazy load from disk if present but not preloaded
                 candidate_path = f"{CFG.lora_dir}/{name}.safetensors"
                 if os.path.isfile(candidate_path):
-                    try:
-                        self.pipe.load_lora_weights(candidate_path, adapter_name=name, lora_prefix=None)
+                    loaded = False
+                    for prefix in (None, "transformer"):
+                        try:
+                            self.pipe.load_lora_weights(
+                                candidate_path, adapter_name=name, lora_prefix=prefix
+                            )
+                            loaded = True
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                    if loaded:
                         self.fixed_adapters.add(name)
                         active_names.append(name)
                         logger.info(
@@ -67,10 +90,10 @@ class LoraManager:
                             extra={"ctx_adapter": name, "ctx_path": candidate_path},
                         )
                         continue
-                    except Exception as exc:
+                    else:
                         raise ValueError(
-                            f"LoRA '{name}' exists on disk but failed to load: {exc}"
-                        ) from exc
+                            f"LoRA '{name}' exists on disk but failed to load: {last_exc}"
+                        ) from last_exc
                 raise ValueError(f"LoRA '{name}' not found among fixed adapters and not a URL")
 
         if active_names:

@@ -69,13 +69,24 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
         for file_name in lora_files:
             adapter_name = os.path.splitext(file_name)[0]
             path = os.path.join(CFG.lora_dir, file_name)
-            try:
-                pipe.load_lora_weights(path, adapter_name=adapter_name, lora_prefix=None)
+            loaded = False
+            for prefix in (None, "transformer"):
+                try:
+                    pipe.load_lora_weights(path, adapter_name=adapter_name, lora_prefix=prefix)
+                    loaded = True
+                    break
+                except Exception as exc:  # pragma: no cover - best-effort fallback
+                    last_exc = exc
+            if loaded:
                 fixed_names.append(adapter_name)
-            except Exception as exc:
+            else:
                 logger.error(
                     "Failed to load fixed LoRA",
-                    extra={"ctx_adapter": adapter_name, "ctx_error": str(exc)},
+                    extra={
+                        "ctx_adapter": adapter_name,
+                        "ctx_error": str(last_exc),
+                        "ctx_path": path,
+                    },
                 )
     else:
         logger.warning("LoRA directory not found", extra={"ctx_dir": CFG.lora_dir})
