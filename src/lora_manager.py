@@ -5,7 +5,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from config import DEFAULT_CONFIG as CFG
 from logging_config import get_logger
-from utils import download_file, sha256_hex, candidate_lora_prefixes, load_sanitized_lora_state_dict
+from utils import download_file, sha256_hex, load_sanitized_lora_state_dict
 
 logger = get_logger(__name__, CFG.log_level)
 
@@ -45,10 +45,11 @@ class LoraManager:
                 try:
                     state_dict = load_sanitized_lora_state_dict(result.path)
                     self.pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
+                    # verify registration
+                    if not (hasattr(self.pipe, "peft_config") and adapter_name in self.pipe.peft_config):
+                        raise ValueError("Adapter not registered in peft_config after load")
                 except Exception as exc:
-                    raise ValueError(
-                        f"External LoRA '{name}' failed to load: {exc}"
-                    ) from exc
+                    raise ValueError(f"External LoRA '{name}' failed to load: {exc}") from exc
 
                 active_names.append(adapter_name)
                 temp_names.append(adapter_name)
@@ -68,6 +69,8 @@ class LoraManager:
                     try:
                         state_dict = load_sanitized_lora_state_dict(candidate_path)
                         self.pipe.load_lora_weights(state_dict, adapter_name=name)
+                        if not (hasattr(self.pipe, "peft_config") and name in self.pipe.peft_config):
+                            raise ValueError("Adapter not registered in peft_config after load")
                         self.fixed_adapters.add(name)
                         active_names.append(name)
                         logger.info(
@@ -76,9 +79,7 @@ class LoraManager:
                         )
                         continue
                     except Exception as exc:
-                        raise ValueError(
-                            f"LoRA '{name}' exists on disk but failed to load: {exc}"
-                        ) from exc
+                        raise ValueError(f"LoRA '{name}' exists on disk but failed to load: {exc}") from exc
                 raise ValueError(f"LoRA '{name}' not found among fixed adapters and not a URL")
 
         if active_names:

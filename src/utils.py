@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import base64
-import io
 import hashlib
+import io
 import os
+import re
 import shutil
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List
 
-from PIL import Image
-from safetensors import safe_open
-from safetensors.torch import load_file as load_safetensors_file
 import torch
+from PIL import Image
+from safetensors.torch import load_file as load_safetensors_file
 
 
 @dataclass
@@ -42,81 +42,53 @@ def image_to_base64_png(image: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def candidate_lora_prefixes(path: str) -> List[str]:
-    """Generate likely lora_prefix values based on keys inside the safetensors file."""
-    prefixes: List[str] = []
-    seen: Set[str] = set()
-
-    base_options = [
-        None,
-        "transformer",
-        "transformer.model",
-        "model",
-        "qwen2_vl.transformer",
-    ]
-    for opt in base_options:
-        prefixes.append(opt)
-        seen.add(str(opt))
-
-    try:
-        with safe_open(path, framework="pt", device="cpu") as f:
-            for key in f.keys():
-                parts = key.split(".")
-                if len(parts) >= 1:
-                    p1 = parts[0]
-                    if str(p1) not in seen:
-                        prefixes.append(p1)
-                        seen.add(str(p1))
-                if len(parts) >= 2:
-                    p2 = ".".join(parts[:2])
-                    if p2 not in seen:
-                        prefixes.append(p2)
-                        seen.add(p2)
-    except Exception:
-        # If inspection fails, fall back to base_options
-        pass
-
-    return prefixes
-
-
 def load_sanitized_lora_state_dict(path: str) -> Dict[str, Any]:
-    """Load a LoRA safetensors file and sanitize keys to match Qwen-Image (transformer.*).
-
-    Common patterns from PEFT exports include:
-    - base_model.model.*  -> transformer.*
-    - model.layers... or layers... -> transformer.model.layers...
-    - lora_unet_*         -> transformer.*
     """
-    state_dict = load_safetensors_file(path)
+    Aggressively sanitize LoRA keys to match Diffusers QwenImageTransformer2DModel structure.
+    Handles:
+      - diffusion_model.transformer_blocks.*   -> transformer.transformer_blocks.*
+      - transformer_blocks_29_attn_to_v       -> transformer.transformer_blocks.29.attn1.to_v
+      - model.layers.N.self_attn.q_proj       -> transformer.transformer_blocks.N.attn1.to_q
+      - attn.* to attn1.* where needed
+    """
+    state_dict = load_safetensors_file(path, device="cpu")
     new_state_dict: Dict[str, Any] = {}
 
     for key, value in state_dict.items():
         new_key = key
 
-        # Strip common PEFT wrapping
-        if new_key.startswith("base_model.model."):
-            new_key = new_key.replace("base_model.model.", "")
+        # Phase 1: strip wrappers
+        new_key = new_key.replace("base_model.model.", "")
+        new_key = new_key.replace("lora_unet_", "")
 
-        # Map known prefixes to transformer
-        if new_key.startswith("lora_unet_"):
-            new_key = new_key.replace("lora_unet_", "transformer.")
-        elif new_key.startswith("model.layers"):
+        # Phase 2: structural renaming
+        if new_key.startswith("diffusion_model."):
+            new_key = new_key.replace("diffusion_model.", "transformer.")
+
+        # underscore flattening -> dotted indices
+        new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
+
+        # LLM native mapping
+        if new_key.startswith("model.layers."):
+            new_key = new_key.replace("model.layers.", "transformer.transformer_blocks.")
+            new_key = new_key.replace("self_attn.q_proj", "attn1.to_q")
+            new_key = new_key.replace("self_attn.k_proj", "attn1.to_k")
+            new_key = new_key.replace("self_attn.v_proj", "attn1.to_v")
+            new_key = new_key.replace("self_attn.o_proj", "attn1.to_out.0")
+
+        # Phase 3: component alignment
+        if ".attn." in new_key:
+            new_key = new_key.replace(".attn.", ".attn1.")
+        if "_attn_to_" in new_key:
+            new_key = new_key.replace("_attn_to_", ".attn1.to_")
+
+        if new_key.startswith("transformer_blocks."):
             new_key = f"transformer.{new_key}"
-        elif new_key.startswith("model.embed_tokens") or new_key.startswith("model.norm"):
-            new_key = f"transformer.{new_key}"
-        elif new_key.startswith("transformer."):
-            pass
-        else:
-            # Generic fallback: if it looks like a layer weight, prepend transformer.
-            if new_key.startswith("layers.") or "attn" in new_key or "q_proj" in new_key or "k_proj" in new_key or "v_proj" in new_key:
-                new_key = f"transformer.{new_key}"
+        if new_key.startswith("layers."):
+            new_key = f"transformer.transformer_blocks.{new_key[7:]}"
 
-        new_state_dict[new_key] = value
-
-    # Ensure tensors on CPU for safe load
-    for k, v in new_state_dict.items():
-        if isinstance(v, torch.Tensor) and v.device.type != "cpu":
-            new_state_dict[k] = v.cpu()
+        # Ensure CPU tensors
+        new_state_dict[new_key] = value.cpu() if isinstance(value, torch.Tensor) else value
 
     return new_state_dict
 
@@ -128,11 +100,6 @@ def download_file(
     timeout: int = 120,
     require_https: bool = True,
 ) -> DownloadResult:
-    """Download URL to destination_path with size guard.
-
-    Raises ValueError on protocol violation or size overflow.
-    """
-
     if require_https and not url.lower().startswith("https://"):
         raise ValueError("External LoRA downloads must use HTTPS")
 
@@ -169,7 +136,6 @@ def cleanup_paths(paths: Iterable[str]) -> None:
             elif os.path.isfile(path):
                 os.remove(path)
         except Exception:
-            # Best-effort cleanup; ignore errors to keep handler resilient
             pass
 
 
@@ -179,7 +145,7 @@ __all__ = [
     "list_safetensors",
     "sha256_hex",
     "image_to_base64_png",
-    "candidate_lora_prefixes",
+    "load_sanitized_lora_state_dict",
     "download_file",
     "cleanup_paths",
 ]

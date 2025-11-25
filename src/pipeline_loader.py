@@ -12,7 +12,7 @@ from diffusers import (
 
 from config import DEFAULT_CONFIG as CFG
 from logging_config import get_logger
-from utils import list_safetensors, candidate_lora_prefixes, load_sanitized_lora_state_dict
+from utils import list_safetensors, load_sanitized_lora_state_dict
 
 logger = get_logger(__name__, CFG.log_level)
 
