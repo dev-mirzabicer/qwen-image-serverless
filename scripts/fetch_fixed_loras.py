@@ -5,6 +5,7 @@ import argparse
 import os
 import sys
 import urllib.request
+from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
@@ -40,19 +41,21 @@ def _headers_for(url: str, hf_token: str | None, civitai_token: str | None) -> D
     }
     if hf_token and url.startswith("https://huggingface.co/"):
         headers["Authorization"] = f"Bearer {hf_token}"
-    if civitai_token and url.startswith("https://civitai.com/"):
-        # Civitai accepts Authorization and X-API-Key; we send both.
-        headers["Authorization"] = f"Bearer {civitai_token}"
-        headers["X-API-Key"] = civitai_token
     return headers
 
 
 def _maybe_add_civitai_token_param(url: str, civitai_token: str | None) -> str:
-    if civitai_token and url.startswith("https://civitai.com/"):
-        separator = "&" if "?" in url else "?"
-        if "token=" not in url:
-            url = f"{url}{separator}token={civitai_token}"
-    return url
+    if not url.startswith("https://civitai.com/"):
+        return url
+    if not civitai_token:
+        raise ValueError("Civitai download requires CIVITAI_TOKEN (or --civitai-token).")
+
+    # Append/replace token query param robustly.
+    parsed = urlparse(url)
+    params = dict(parse_qsl(parsed.query))
+    params["token"] = civitai_token
+    new_query = urlencode(params)
+    return urlunparse(parsed._replace(query=new_query))
 
 
 def download(
