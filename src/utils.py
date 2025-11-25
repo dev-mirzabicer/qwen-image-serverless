@@ -7,9 +7,10 @@ import os
 import shutil
 import urllib.request
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Set
 
 from PIL import Image
+from safetensors import safe_open
 
 
 @dataclass
@@ -37,6 +38,37 @@ def image_to_base64_png(image: Image.Image) -> str:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def candidate_lora_prefixes(path: str) -> List[str]:
+    """Generate likely lora_prefix values based on keys inside the safetensors file."""
+    prefixes: List[str] = []
+    seen: Set[str] = set()
+
+    base_options = [None, "transformer", "qwen2_vl.transformer"]
+    for opt in base_options:
+        prefixes.append(opt)
+        seen.add(str(opt))
+
+    try:
+        with safe_open(path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                parts = key.split(".")
+                if len(parts) >= 1:
+                    p1 = parts[0]
+                    if str(p1) not in seen:
+                        prefixes.append(p1)
+                        seen.add(str(p1))
+                if len(parts) >= 2:
+                    p2 = ".".join(parts[:2])
+                    if p2 not in seen:
+                        prefixes.append(p2)
+                        seen.add(p2)
+    except Exception:
+        # If inspection fails, fall back to base_options
+        pass
+
+    return prefixes
 
 
 def download_file(
@@ -97,6 +129,7 @@ __all__ = [
     "list_safetensors",
     "sha256_hex",
     "image_to_base64_png",
+    "candidate_lora_prefixes",
     "download_file",
     "cleanup_paths",
 ]

@@ -12,7 +12,7 @@ from diffusers import (
 
 from config import DEFAULT_CONFIG as CFG
 from logging_config import get_logger
-from utils import list_safetensors
+from utils import list_safetensors, candidate_lora_prefixes
 
 logger = get_logger(__name__, CFG.log_level)
 
@@ -70,7 +70,8 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
             adapter_name = os.path.splitext(file_name)[0]
             path = os.path.join(CFG.lora_dir, file_name)
             loaded = False
-            for prefix in (None, "transformer"):
+            last_exc = None
+            for prefix in candidate_lora_prefixes(path):
                 try:
                     pipe.load_lora_weights(path, adapter_name=adapter_name, lora_prefix=prefix)
                     loaded = True

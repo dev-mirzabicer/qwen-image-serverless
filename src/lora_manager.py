@@ -5,7 +5,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from config import DEFAULT_CONFIG as CFG
 from logging_config import get_logger
-from utils import download_file, sha256_hex
+from utils import download_file, sha256_hex, candidate_lora_prefixes
 
 logger = get_logger(__name__, CFG.log_level)
 
@@ -43,7 +43,8 @@ class LoraManager:
                     require_https=CFG.require_https_for_lora,
                 )
                 loaded = False
-                for prefix in (None, "transformer"):
+                last_exc = None
+                for prefix in candidate_lora_prefixes(result.path):
                     try:
                         self.pipe.load_lora_weights(
                             result.path, adapter_name=adapter_name, lora_prefix=prefix
@@ -73,7 +74,8 @@ class LoraManager:
                 candidate_path = f"{CFG.lora_dir}/{name}.safetensors"
                 if os.path.isfile(candidate_path):
                     loaded = False
-                    for prefix in (None, "transformer"):
+                    last_exc = None
+                    for prefix in candidate_lora_prefixes(candidate_path):
                         try:
                             self.pipe.load_lora_weights(
                                 candidate_path, adapter_name=name, lora_prefix=prefix
