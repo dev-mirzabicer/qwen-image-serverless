@@ -43,7 +43,6 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
         CFG.model_local_dir,
         scheduler=scheduler,
         torch_dtype=torch.bfloat16,
-        variant="bf16",
         use_safetensors=True,
         safety_checker=None,
         requires_safety_checker=False,
