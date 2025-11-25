@@ -7,10 +7,12 @@ import os
 import shutil
 import urllib.request
 from dataclasses import dataclass
-from typing import Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Set
 
 from PIL import Image
 from safetensors import safe_open
+from safetensors.torch import load_file as load_safetensors_file
+import torch
 
 
 @dataclass
@@ -45,7 +47,13 @@ def candidate_lora_prefixes(path: str) -> List[str]:
     prefixes: List[str] = []
     seen: Set[str] = set()
 
-    base_options = [None, "transformer", "qwen2_vl.transformer"]
+    base_options = [
+        None,
+        "transformer",
+        "transformer.model",
+        "model",
+        "qwen2_vl.transformer",
+    ]
     for opt in base_options:
         prefixes.append(opt)
         seen.add(str(opt))
@@ -69,6 +77,48 @@ def candidate_lora_prefixes(path: str) -> List[str]:
         pass
 
     return prefixes
+
+
+def load_sanitized_lora_state_dict(path: str) -> Dict[str, Any]:
+    """Load a LoRA safetensors file and sanitize keys to match Qwen-Image (transformer.*).
+
+    Common patterns from PEFT exports include:
+    - base_model.model.*  -> transformer.*
+    - model.layers... or layers... -> transformer.model.layers...
+    - lora_unet_*         -> transformer.*
+    """
+    state_dict = load_safetensors_file(path)
+    new_state_dict: Dict[str, Any] = {}
+
+    for key, value in state_dict.items():
+        new_key = key
+
+        # Strip common PEFT wrapping
+        if new_key.startswith("base_model.model."):
+            new_key = new_key.replace("base_model.model.", "")
+
+        # Map known prefixes to transformer
+        if new_key.startswith("lora_unet_"):
+            new_key = new_key.replace("lora_unet_", "transformer.")
+        elif new_key.startswith("model.layers"):
+            new_key = f"transformer.{new_key}"
+        elif new_key.startswith("model.embed_tokens") or new_key.startswith("model.norm"):
+            new_key = f"transformer.{new_key}"
+        elif new_key.startswith("transformer."):
+            pass
+        else:
+            # Generic fallback: if it looks like a layer weight, prepend transformer.
+            if new_key.startswith("layers.") or "attn" in new_key or "q_proj" in new_key or "k_proj" in new_key or "v_proj" in new_key:
+                new_key = f"transformer.{new_key}"
+
+        new_state_dict[new_key] = value
+
+    # Ensure tensors on CPU for safe load
+    for k, v in new_state_dict.items():
+        if isinstance(v, torch.Tensor) and v.device.type != "cpu":
+            new_state_dict[k] = v.cpu()
+
+    return new_state_dict
 
 
 def download_file(

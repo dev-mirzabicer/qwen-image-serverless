@@ -12,7 +12,7 @@ from diffusers import (
 
 from config import DEFAULT_CONFIG as CFG
 from logging_config import get_logger
-from utils import list_safetensors, candidate_lora_prefixes
+from utils import list_safetensors, candidate_lora_prefixes, load_sanitized_lora_state_dict
 
 logger = get_logger(__name__, CFG.log_level)
 
@@ -66,18 +66,18 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
         logger.info(
             "Loading fixed LoRAs", extra={"ctx_count": len(lora_files), "ctx_dir": CFG.lora_dir}
         )
+        failed_adapters = []
         for file_name in lora_files:
             adapter_name = os.path.splitext(file_name)[0]
             path = os.path.join(CFG.lora_dir, file_name)
             loaded = False
             last_exc = None
-            for prefix in candidate_lora_prefixes(path):
-                try:
-                    pipe.load_lora_weights(path, adapter_name=adapter_name, lora_prefix=prefix)
-                    loaded = True
-                    break
-                except Exception as exc:  # pragma: no cover - best-effort fallback
-                    last_exc = exc
+            try:
+                state_dict = load_sanitized_lora_state_dict(path)
+                pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
+                loaded = True
+            except Exception as exc:
+                last_exc = exc
             if loaded:
                 fixed_names.append(adapter_name)
             else:
@@ -89,6 +89,11 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
                         "ctx_path": path,
                     },
                 )
+                failed_adapters.append(adapter_name)
+        logger.info(
+            "Fixed LoRAs loaded summary",
+            extra={"ctx_loaded": fixed_names, "ctx_failed": failed_adapters},
+        )
     else:
         logger.warning("LoRA directory not found", extra={"ctx_dir": CFG.lora_dir})
 
