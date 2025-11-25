@@ -34,14 +34,25 @@ LORAS: List[Tuple[str, str]] = [
 
 
 def _headers_for(url: str, hf_token: str | None, civitai_token: str | None) -> Dict[str, str]:
-    headers: Dict[str, str] = {}
+    headers: Dict[str, str] = {
+        "User-Agent": "qwen-image-runpod-fetcher/1.0",
+        "Accept": "*/*",
+    }
     if hf_token and url.startswith("https://huggingface.co/"):
         headers["Authorization"] = f"Bearer {hf_token}"
     if civitai_token and url.startswith("https://civitai.com/"):
-        # Civitai accepts either Authorization: Bearer or X-API-Key
+        # Civitai accepts Authorization and X-API-Key; we send both.
         headers["Authorization"] = f"Bearer {civitai_token}"
         headers["X-API-Key"] = civitai_token
     return headers
+
+
+def _maybe_add_civitai_token_param(url: str, civitai_token: str | None) -> str:
+    if civitai_token and url.startswith("https://civitai.com/"):
+        separator = "&" if "?" in url else "?"
+        if "token=" not in url:
+            url = f"{url}{separator}token={civitai_token}"
+    return url
 
 
 def download(
@@ -57,6 +68,7 @@ def download(
     if os.path.exists(dest_path):
         return "skipped"
 
+    url = _maybe_add_civitai_token_param(url, civitai_token)
     req = urllib.request.Request(url, headers=_headers_for(url, hf_token, civitai_token))
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         length = resp.getheader("Content-Length")
@@ -104,25 +116,25 @@ def main():
 
     max_bytes = args.max_mb * 1024 * 1024
 
-    tasks = []
     failures: List[Tuple[str, str]] = []
+    future_to_name = {}
     with ThreadPoolExecutor(max_workers=max(args.parallel, 1)) as executor:
         for name, url in LORAS:
             dest_path = os.path.join(args.dest, f"{name}.safetensors")
-            tasks.append(
-                executor.submit(
-                    download,
-                    url,
-                    dest_path,
-                    max_bytes,
-                    hf_token=args.hf_token,
-                    civitai_token=args.civitai_token,
-                )
+            fut = executor.submit(
+                download,
+                url,
+                dest_path,
+                max_bytes,
+                hf_token=args.hf_token,
+                civitai_token=args.civitai_token,
             )
+            future_to_name[fut] = name
 
-        for (name, _), future in zip(LORAS, as_completed(tasks)):
+        for fut in as_completed(future_to_name):
+            name = future_to_name[fut]
             try:
-                status = future.result()
+                status = fut.result()
                 print(f"[{status}] {name}")
             except Exception as exc:
                 failures.append((name, str(exc)))
