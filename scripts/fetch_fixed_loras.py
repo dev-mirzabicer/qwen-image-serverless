@@ -33,20 +33,31 @@ LORAS: List[Tuple[str, str]] = [
 ]
 
 
-def _headers_for(url: str, token: str | None) -> Dict[str, str]:
+def _headers_for(url: str, hf_token: str | None, civitai_token: str | None) -> Dict[str, str]:
     headers: Dict[str, str] = {}
-    if token and url.startswith("https://huggingface.co/"):
-        headers["Authorization"] = f"Bearer {token}"
+    if hf_token and url.startswith("https://huggingface.co/"):
+        headers["Authorization"] = f"Bearer {hf_token}"
+    if civitai_token and url.startswith("https://civitai.com/"):
+        # Civitai accepts either Authorization: Bearer or X-API-Key
+        headers["Authorization"] = f"Bearer {civitai_token}"
+        headers["X-API-Key"] = civitai_token
     return headers
 
 
-def download(url: str, dest_path: str, max_bytes: int, timeout: int = 900, token: str | None = None) -> str:
+def download(
+    url: str,
+    dest_path: str,
+    max_bytes: int,
+    timeout: int = 900,
+    hf_token: str | None = None,
+    civitai_token: str | None = None,
+) -> str:
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
     if os.path.exists(dest_path):
         return "skipped"
 
-    req = urllib.request.Request(url, headers=_headers_for(url, token))
+    req = urllib.request.Request(url, headers=_headers_for(url, hf_token, civitai_token))
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         length = resp.getheader("Content-Length")
         if length and int(length) > max_bytes:
@@ -84,6 +95,11 @@ def main():
         default=os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_HOME_TOKEN"),
         help="Hugging Face token for gated/private LoRAs (read access). Can also be set via HF_TOKEN env.",
     )
+    parser.add_argument(
+        "--civitai-token",
+        default=os.getenv("CIVITAI_TOKEN"),
+        help="Civitai API token for gated downloads. Can also be set via CIVITAI_TOKEN env.",
+    )
     args = parser.parse_args()
 
     max_bytes = args.max_mb * 1024 * 1024
@@ -93,7 +109,16 @@ def main():
     with ThreadPoolExecutor(max_workers=max(args.parallel, 1)) as executor:
         for name, url in LORAS:
             dest_path = os.path.join(args.dest, f"{name}.safetensors")
-            tasks.append(executor.submit(download, url, dest_path, max_bytes, token=args.hf_token))
+            tasks.append(
+                executor.submit(
+                    download,
+                    url,
+                    dest_path,
+                    max_bytes,
+                    hf_token=args.hf_token,
+                    civitai_token=args.civitai_token,
+                )
+            )
 
         for (name, _), future in zip(LORAS, as_completed(tasks)):
             try:
