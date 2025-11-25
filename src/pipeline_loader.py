@@ -70,7 +70,7 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
             adapter_name = os.path.splitext(file_name)[0]
             path = os.path.join(CFG.lora_dir, file_name)
             try:
-                pipe.load_lora_weights(path, adapter_name=adapter_name)
+                pipe.load_lora_weights(path, adapter_name=adapter_name, lora_prefix=None)
                 fixed_names.append(adapter_name)
             except Exception as exc:
                 logger.error(
