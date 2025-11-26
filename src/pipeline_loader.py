@@ -65,12 +65,11 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
     if CFG.cpu_offload:
         pipe.enable_model_cpu_offload()
 
-    # Qwen-Image passes image_rotary_emb to attention processors; xFormers drops it and crashes.
-    try:
-        pipe.disable_xformers_memory_efficient_attention()
-        logger.info("Disabled xFormers attention to ensure RoPE compatibility")
-    except Exception:
-        pass
+    # Do NOT touch attention processors. Qwen-Image installs a custom double-stream
+    # processor (Qwen*AttnProcessor2_0) that must remain in place to handle RoPE
+    # and the dual (image,text) streams. Replacing it with generic processors
+    # (e.g. via disable_xformers_memory_efficient_attention) causes the
+    # "not enough values to unpack" crash. Leave as-is.
 
     # Inspect model structure for logging and alignment
     try:

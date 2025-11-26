@@ -62,6 +62,10 @@ def load_sanitized_lora_state_dict(
         new_key = key
 
         # ---- Phase 1: strip common wrappers ----
+        # Handle double nesting often seen in PEFT (base_model.model.model.layers)
+        if "base_model.model.model." in new_key:
+            new_key = new_key.replace("base_model.model.model.", "model.")
+
         new_key = new_key.replace("base_model.model.", "")
         new_key = new_key.replace("lora_unet_", "")
 
@@ -75,6 +79,10 @@ def load_sanitized_lora_state_dict(
             new_key = new_key.replace("layers.", f"transformer.{block_name}.")
         elif new_key.startswith("transformer.layers."):
             new_key = new_key.replace("transformer.layers.", f"transformer.{block_name}.")
+        elif "single_blocks." in new_key:
+            new_key = new_key.replace("single_blocks.", f"transformer.{block_name}.")
+        elif "double_blocks." in new_key:
+            new_key = new_key.replace("double_blocks.", f"transformer.{block_name}.")
 
         # Underscore flattened blocks (e.g., transformer_blocks_29_attn_to_v)
         new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
@@ -84,6 +92,10 @@ def load_sanitized_lora_state_dict(
         new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
         new_key = new_key.replace("self_attn.v_proj", f"{attn_name}.to_v")
         new_key = new_key.replace("self_attn.o_proj", f"{attn_name}.to_out.0")
+
+        # If model uses 'attn' but LoRA uses 'attn1', map it
+        if "attn1." in new_key and attn_name == "attn":
+            new_key = new_key.replace("attn1.", "attn.")
 
         # MLP / FeedForward mappings
         new_key = new_key.replace("mlp.gate_proj", "ff.net.0.proj")

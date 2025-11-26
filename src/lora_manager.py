@@ -137,7 +137,9 @@ class LoraManager:
                 )
 
             if valid_adapters:
-                self.pipe.set_adapters(valid_adapters, adapter_weights=adapter_weights)
+                # Align weights with filtered adapters
+                weights_for_valid = [w for (n, w) in zip(active_names, adapter_weights) if n in peft_config]
+                self.pipe.set_adapters(valid_adapters, adapter_weights=weights_for_valid)
             else:
                 logger.warning("No valid adapters to activate")
 
