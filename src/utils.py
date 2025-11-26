@@ -96,6 +96,13 @@ def load_sanitized_lora_state_dict(
                 new_key = new_key.replace("up_proj", "ff.net.0.proj")
             if "down_proj" in new_key:
                 new_key = new_key.replace("down_proj", "ff.net.2")
+            # Llama / Qwen variants: w1/w2/w3
+            if ".w1." in new_key:
+                new_key = new_key.replace(".w1.", ".ff.net.0.proj.")
+            if ".w3." in new_key:
+                new_key = new_key.replace(".w3.", ".ff.net.0.proj.")
+            if ".w2." in new_key:
+                new_key = new_key.replace(".w2.", ".ff.net.2.")
 
         # Ensure attention naming alignment
         if ".attn." in new_key and attn_name != "attn":

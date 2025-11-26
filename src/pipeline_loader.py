@@ -65,11 +65,12 @@ def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
     if CFG.cpu_offload:
         pipe.enable_model_cpu_offload()
 
-    if CFG.enable_xformers:
-        try:
-            pipe.enable_xformers_memory_efficient_attention()
-        except Exception as exc:
-            logger.warning("xFormers attention could not be enabled", extra={"ctx_error": str(exc)})
+    # Qwen-Image passes image_rotary_emb to attention processors; xFormers drops it and crashes.
+    try:
+        pipe.disable_xformers_memory_efficient_attention()
+        logger.info("Disabled xFormers attention to ensure RoPE compatibility")
+    except Exception:
+        pass
 
     # Inspect model structure for logging and alignment
     try:
