@@ -46,7 +46,10 @@ def _get_peft_config(pipe) -> Dict[str, Any]:
         targets = {}
         for name, cfg in peft_config.items():
             try:
-                targets[name] = getattr(cfg, "target_modules", None)
+                tm = getattr(cfg, "target_modules", None)
+                if isinstance(tm, set):
+                    tm = sorted(tm)
+                targets[name] = tm
             except Exception:
                 targets[name] = None
         out["target_modules"] = targets

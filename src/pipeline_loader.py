@@ -35,42 +35,45 @@ def apply_scheduler(pipe, scheduler_key: str) -> None:
 def _patch_torch_compiler() -> None:
     """Provide torch.compiler.is_compiling and SDP attention shim for older torch."""
     if not hasattr(torch, "compiler"):
-        torch.compiler = SimpleNamespace()  # type: ignore[attr-defined]
+        class _DummyCompiler:
+            @staticmethod
+            def is_compiling() -> bool:
+                return False
+
+        torch.compiler = _DummyCompiler()  # type: ignore[attr-defined]
     if not hasattr(torch.compiler, "is_compiling"):
         torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
 
-    # Shim scaled_dot_product_attention to drop newer kwargs (e.g., enable_gqa)
+    # Shim scaled_dot_product_attention to drop newer kwargs (e.g., enable_gqa, scale)
     try:
-        import inspect
         import torch.nn.functional as F  # type: ignore
 
-        sig = inspect.signature(F.scaled_dot_product_attention)
-        if "enable_gqa" not in sig.parameters:
-            orig_sdp = F.scaled_dot_product_attention
+        orig_sdp = F.scaled_dot_product_attention
 
-            def _sdp_compat(
+        def _sdp_compat(
+            query,
+            key,
+            value,
+            attn_mask=None,
+            dropout_p: float = 0.0,
+            is_causal: bool = False,
+            **kwargs,
+        ):
+            kwargs.pop("enable_gqa", None)
+            kwargs.pop("scale", None)
+            return orig_sdp(
                 query,
                 key,
                 value,
-                attn_mask=None,
-                dropout_p: float = 0.0,
-                is_causal: bool = False,
-                **kwargs,
-            ):
-                # Drop unknown kwargs like enable_gqa/scale for older torch
-                return orig_sdp(
-                    query,
-                    key,
-                    value,
-                    attn_mask=attn_mask,
-                    dropout_p=dropout_p,
-                    is_causal=is_causal,
-                )
-
-            F.scaled_dot_product_attention = _sdp_compat  # type: ignore[assignment]
-            logger.info(
-                "Patched torch.nn.functional.scaled_dot_product_attention for compatibility"
+                attn_mask,
+                dropout_p,
+                is_causal,
             )
+
+        F.scaled_dot_product_attention = _sdp_compat  # type: ignore[assignment]
+        logger.info(
+            "Patched torch.nn.functional.scaled_dot_product_attention for compatibility"
+        )
     except Exception as e:
         logger.warning(
             "Failed to patch scaled_dot_product_attention",

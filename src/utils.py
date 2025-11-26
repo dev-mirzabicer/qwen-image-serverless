@@ -87,6 +87,15 @@ def load_sanitized_lora_state_dict(
         # Underscore flattened blocks (e.g., transformer_blocks_29_attn_to_v)
         new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
 
+        # Fix kohya-style flattened attention names (amateur, real_life_qwen)
+        # attn_add_k_proj -> attn.add_k_proj, attn_to_out_0 -> attn.to_out.0, attn_to_k -> attn.to_k, etc.
+        if ".attn_add_" in new_key:
+            new_key = new_key.replace(".attn_add_", ".attn.add_")
+        if ".attn_to_out_" in new_key:
+            new_key = new_key.replace(".attn_to_out_", ".attn.to_out.")
+        if ".attn_to_" in new_key:
+            new_key = new_key.replace(".attn_to_", ".attn.to_")
+
         # ---- Phase 3: component alignment (apply globally) ----
         new_key = new_key.replace("self_attn.q_proj", f"{attn_name}.to_q")
         new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
@@ -115,6 +124,12 @@ def load_sanitized_lora_state_dict(
                 new_key = new_key.replace(".w3.", ".ff.net.0.proj.")
             if ".w2." in new_key:
                 new_key = new_key.replace(".w2.", ".ff.net.2.")
+
+        # Map kohya/lycoris style lora_down/lora_up to lora_A/lora_B for PEFT
+        if ".lora_down" in new_key:
+            new_key = new_key.replace(".lora_down", ".lora_A")
+        if ".lora_up" in new_key:
+            new_key = new_key.replace(".lora_up", ".lora_B")
 
         # Ensure attention naming alignment
         if ".attn." in new_key and attn_name != "attn":
