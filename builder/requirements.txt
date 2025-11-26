@@ -1,6 +1,7 @@
 runpod==1.6.0
 diffusers==0.35.2
 transformers==4.57.1
+xformers==0.0.24
 safetensors==0.7.0
 peft==0.18.0
 sentencepiece==0.2.0
