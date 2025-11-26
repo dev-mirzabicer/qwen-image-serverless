@@ -12,6 +12,7 @@ from lora_manager import LoraManager
 from pipeline_loader import apply_scheduler, initialize_pipeline
 from request_schema import ValidationError, validate_request
 from utils import image_to_base64_png
+from debug_inspector import run_debug
 
 logger = get_logger("handler", CFG.log_level)
 
@@ -36,6 +37,13 @@ def handler(job):
     _lazy_init()
 
     job_input = job.get("input", {}) if isinstance(job, dict) else {}
+
+    # Debug endpoint: short-circuit normal inference when input.debug is present
+    debug_spec = job_input.get("debug")
+    if debug_spec is not None:
+        if not isinstance(debug_spec, dict):
+            debug_spec = {}
+        return run_debug(pipe=PIPE, cfg=CFG, lora_manager=LORA_MANAGER, options=debug_spec)
 
     try:
         request = validate_request(job_input)
