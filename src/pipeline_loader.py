@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from typing import List, Tuple
 
 import torch
@@ -31,11 +32,21 @@ def apply_scheduler(pipe, scheduler_key: str) -> None:
     pipe.scheduler = scheduler
 
 
+def _patch_torch_compiler() -> None:
+    """Provide torch.compiler.is_compiling for older torch versions (<=2.2)."""
+    if not hasattr(torch, "compiler"):
+        torch.compiler = SimpleNamespace()  # type: ignore[attr-defined]
+    if not hasattr(torch.compiler, "is_compiling"):
+        torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
+
+
 def initialize_pipeline() -> Tuple[QwenImagePipeline, List[str]]:
     if not os.path.isdir(CFG.model_local_dir):
         raise FileNotFoundError(
             f"Model directory '{CFG.model_local_dir}' not found. Populate the Network Volume via scripts/setup_volume.py."
         )
+
+    _patch_torch_compiler()
 
     scheduler = _build_scheduler(CFG.model_local_dir, "flow_match")
 

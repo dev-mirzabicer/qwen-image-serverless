@@ -47,63 +47,62 @@ def load_sanitized_lora_state_dict(
     block_name: str = "transformer_blocks",
     attn_name: str = "attn1",
 ) -> Dict[str, Any]:
-    """
-    Sanitize LoRA keys to match the specific Diffusers model structure.
+    """Sanitize LoRA keys to match the target Qwen-Image DiT structure.
 
-    Args:
-        path: Path to safetensors file.
-        block_name: The name of the layer list in the model (e.g., 'transformer_blocks' or 'blocks').
-        attn_name: The name of the self-attention module (e.g., 'attn1' or 'attn').
+    The loader aggressively normalizes prefixes from common training toolchains
+    (PEFT, Kohya, ComfyUI) and maps attention + MLP projections into the
+    `transformer.<block_name>.<index>.<attn_name>` layout used by Diffusers' 
+    ``QwenImageTransformer2DModel``.
     """
+
     state_dict = load_safetensors_file(path, device="cpu")
     new_state_dict: Dict[str, Any] = {}
 
     for key, value in state_dict.items():
         new_key = key
 
-        # Phase 1: Strip common wrappers
+        # ---- Phase 1: strip common wrappers ----
         new_key = new_key.replace("base_model.model.", "")
         new_key = new_key.replace("lora_unet_", "")
 
-        # Phase 2: Structural renaming (Qwen2-VL -> Diffusers DiT)
-
-        # Map 'model.layers' (LLM) to 'transformer.{block_name}'
+        # ---- Phase 2: structural renaming ----
+        # LLM-style: model.layers.N.
         if new_key.startswith("model.layers."):
             new_key = new_key.replace("model.layers.", f"transformer.{block_name}.")
-
-            # Map attention projections
+            # Attention projections
             new_key = new_key.replace("self_attn.q_proj", f"{attn_name}.to_q")
             new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
             new_key = new_key.replace("self_attn.v_proj", f"{attn_name}.to_v")
             new_key = new_key.replace("self_attn.o_proj", f"{attn_name}.to_out.0")
-
-            # Basic MLP remap (best-effort; DiT often uses ff.net.*)
+            # MLP projections (GLU / SwiGLU best-effort)
             new_key = new_key.replace("mlp.gate_proj", "ff.net.0.proj")
             new_key = new_key.replace("mlp.up_proj", "ff.net.0.proj")
             new_key = new_key.replace("mlp.down_proj", "ff.net.2")
 
-        # Map 'diffusion_model.transformer_blocks' -> 'transformer.{block_name}'
+        # ComfyUI/Fooocus style: diffusion_model.transformer_blocks.N.
         elif new_key.startswith("diffusion_model.transformer_blocks."):
             new_key = new_key.replace("diffusion_model.transformer_blocks.", f"transformer.{block_name}.")
 
-        # Map 'layers.' -> 'transformer.{block_name}.'
+        # Plain layers.N.
         elif new_key.startswith("layers."):
             new_key = new_key.replace("layers.", f"transformer.{block_name}.")
 
-        # Phase 3: Component alignment
+        # Underscore flattened blocks (e.g., transformer_blocks_29_attn_to_v)
+        new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
+
+        # ---- Phase 3: component alignment ----
         if ".attn." in new_key and attn_name != "attn":
             new_key = new_key.replace(".attn.", f".{attn_name}.")
 
+        # Honor detected block name
         if "transformer_blocks." in new_key and block_name != "transformer_blocks":
             new_key = new_key.replace("transformer_blocks.", f"{block_name}.")
 
+        # Ensure transformer prefix when block is root
         if new_key.startswith(f"{block_name}."):
             new_key = f"transformer.{new_key}"
 
-        # Drop non-standard additive projections that often cause unexpected key errors
-        if "add_k_proj" in new_key or "add_q_proj" in new_key or "add_v_proj" in new_key:
-            continue
-
+        # Keep tensors on CPU for load
         new_state_dict[new_key] = value.cpu() if isinstance(value, torch.Tensor) else value
 
     return new_state_dict

@@ -11,7 +11,7 @@ logger = get_logger(__name__, CFG.log_level)
 
 
 class LoraManager:
-    """Manage fixed and temporary LoRA adapters."""
+    """Manage fixed and temporary LoRA adapters with dynamic structure detection."""
 
     def __init__(self, pipe, fixed_adapters: Iterable[str]):
         self.pipe = pipe
@@ -54,6 +54,23 @@ class LoraManager:
 
         return block_name, attn_name
 
+    def _get_peft_config(self):
+        if hasattr(self.pipe, "peft_config") and self.pipe.peft_config:
+            return self.pipe.peft_config
+        if hasattr(self.pipe, "transformer") and hasattr(self.pipe.transformer, "peft_config"):
+            return self.pipe.transformer.peft_config
+        return {}
+
+    def _load_adapter(self, path: str, adapter_name: str) -> None:
+        state_dict = load_sanitized_lora_state_dict(
+            path, block_name=self.block_name, attn_name=self.attn_name
+        )
+        self.pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
+
+        peft_config = self._get_peft_config()
+        if adapter_name not in peft_config:
+            raise ValueError("Adapter loaded but not registered in peft_config (key mismatch?)")
+
     def activate(self, loras: Dict[str, float]) -> Tuple[List[str], List[str]]:
         """Activate requested LoRAs. Returns (active_names, temp_names)."""
         if not loras:
@@ -66,11 +83,15 @@ class LoraManager:
 
         for name, weight in loras.items():
             adapter_weights.append(float(weight))
+
             if name in self.fixed_adapters:
                 active_names.append(name)
-            elif name.lower().startswith("http://") and CFG.require_https_for_lora:
-                raise ValueError("External LoRA URLs must use HTTPS")
-            elif name.lower().startswith("http"):
+                continue
+
+            if name.lower().startswith("http"):
+                if name.lower().startswith("http://") and CFG.require_https_for_lora:
+                    raise ValueError("External LoRA URLs must use HTTPS")
+
                 adapter_name = sha256_hex(name)[:16]
                 result = download_file(
                     name,
@@ -80,13 +101,7 @@ class LoraManager:
                     require_https=CFG.require_https_for_lora,
                 )
                 try:
-                    state_dict = load_sanitized_lora_state_dict(
-                        result.path, block_name=self.block_name, attn_name=self.attn_name
-                    )
-                    self.pipe.load_lora_weights(state_dict, adapter_name=adapter_name)
-                    # verify registration
-                    if not (hasattr(self.pipe, "peft_config") and adapter_name in self.pipe.peft_config):
-                        raise ValueError("Adapter not registered in peft_config after load")
+                    self._load_adapter(result.path, adapter_name)
                 except Exception as exc:
                     raise ValueError(f"External LoRA '{name}' failed to load: {exc}") from exc
 
@@ -94,63 +109,37 @@ class LoraManager:
                 temp_names.append(adapter_name)
                 logger.info(
                     "Loaded external LoRA",
-                    extra={
-                        "ctx_url": name,
-                        "ctx_adapter": adapter_name,
-                        "ctx_size_bytes": result.size_bytes,
-                        "ctx_cache": result.from_cache,
-                    },
+                    extra={"ctx_url": name, "ctx_adapter": adapter_name},
                 )
             else:
-                # Try lazy load from disk if present but not preloaded
                 candidate_path = f"{CFG.lora_dir}/{name}.safetensors"
                 if os.path.isfile(candidate_path):
                     try:
-                        state_dict = load_sanitized_lora_state_dict(
-                            candidate_path, block_name=self.block_name, attn_name=self.attn_name
-                        )
-                        self.pipe.load_lora_weights(state_dict, adapter_name=name)
-                        if not (hasattr(self.pipe, "peft_config") and name in self.pipe.peft_config):
-                            raise ValueError("Adapter not registered in peft_config after load")
+                        self._load_adapter(candidate_path, name)
                         self.fixed_adapters.add(name)
                         active_names.append(name)
                         logger.info(
-                            "Lazily loaded fixed LoRA on demand",
+                            "Lazily loaded fixed LoRA",
                             extra={"ctx_adapter": name, "ctx_path": candidate_path},
                         )
-                        continue
                     except Exception as exc:
                         raise ValueError(f"LoRA '{name}' exists on disk but failed to load: {exc}") from exc
-                raise ValueError(f"LoRA '{name}' not found among fixed adapters and not a URL")
+                else:
+                    raise ValueError(f"LoRA '{name}' not found among fixed adapters and not a URL")
 
         if active_names:
-            # Filter to adapters that are actually loaded in peft_config to avoid ValueError
-            available = set(getattr(self.pipe, "peft_config", {}).keys())
-            if not available:
+            peft_config = self._get_peft_config()
+            valid_adapters = [n for n in active_names if n in peft_config]
+            if len(valid_adapters) != len(active_names):
                 logger.warning(
-                    "No adapters present in pipe.peft_config; skipping activation",
-                    extra={"ctx_requested": active_names},
-                )
-                return [], temp_names
-
-            filtered_names: List[str] = []
-            filtered_weights: List[float] = []
-            for n, w in zip(active_names, adapter_weights):
-                if n in available:
-                    filtered_names.append(n)
-                    filtered_weights.append(w)
-                else:
-                    logger.warning(
-                        "Requested LoRA not loaded; skipping",
-                        extra={"ctx_adapter": n, "ctx_available": list(available)},
-                    )
-
-            if not filtered_names:
-                raise ValueError(
-                    f"No requested LoRAs could be loaded; requested={active_names}, available={list(available)}"
+                    "Some requested adapters were not found in peft_config",
+                    extra={"ctx_requested": active_names, "ctx_valid": valid_adapters},
                 )
 
-            self.pipe.set_adapters(filtered_names, adapter_weights=filtered_weights)
+            if valid_adapters:
+                self.pipe.set_adapters(valid_adapters, adapter_weights=adapter_weights)
+            else:
+                logger.warning("No valid adapters to activate")
 
         return active_names, temp_names
 
@@ -160,7 +149,6 @@ class LoraManager:
                 self.pipe.delete_adapters(list(temp_names))
             except Exception as exc:
                 logger.warning("Failed to delete temporary adapters", extra={"ctx_error": str(exc)})
-        # Always disable to avoid cross-request leakage
         try:
             self.pipe.disable_lora()
         except Exception:
