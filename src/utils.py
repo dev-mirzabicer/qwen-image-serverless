@@ -66,31 +66,38 @@ def load_sanitized_lora_state_dict(
         new_key = new_key.replace("lora_unet_", "")
 
         # ---- Phase 2: structural renaming ----
-        # LLM-style: model.layers.N.
+        # Normalize common block prefixes to transformer.<block_name>
         if new_key.startswith("model.layers."):
             new_key = new_key.replace("model.layers.", f"transformer.{block_name}.")
-            # Attention projections
-            new_key = new_key.replace("self_attn.q_proj", f"{attn_name}.to_q")
-            new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
-            new_key = new_key.replace("self_attn.v_proj", f"{attn_name}.to_v")
-            new_key = new_key.replace("self_attn.o_proj", f"{attn_name}.to_out.0")
-            # MLP projections (GLU / SwiGLU best-effort)
-            new_key = new_key.replace("mlp.gate_proj", "ff.net.0.proj")
-            new_key = new_key.replace("mlp.up_proj", "ff.net.0.proj")
-            new_key = new_key.replace("mlp.down_proj", "ff.net.2")
-
-        # ComfyUI/Fooocus style: diffusion_model.transformer_blocks.N.
         elif new_key.startswith("diffusion_model.transformer_blocks."):
             new_key = new_key.replace("diffusion_model.transformer_blocks.", f"transformer.{block_name}.")
-
-        # Plain layers.N.
         elif new_key.startswith("layers."):
             new_key = new_key.replace("layers.", f"transformer.{block_name}.")
+        elif new_key.startswith("transformer.layers."):
+            new_key = new_key.replace("transformer.layers.", f"transformer.{block_name}.")
 
         # Underscore flattened blocks (e.g., transformer_blocks_29_attn_to_v)
         new_key = re.sub(r"transformer_blocks_(\d+)_", r"transformer_blocks.\1.", new_key)
 
-        # ---- Phase 3: component alignment ----
+        # ---- Phase 3: component alignment (apply globally) ----
+        new_key = new_key.replace("self_attn.q_proj", f"{attn_name}.to_q")
+        new_key = new_key.replace("self_attn.k_proj", f"{attn_name}.to_k")
+        new_key = new_key.replace("self_attn.v_proj", f"{attn_name}.to_v")
+        new_key = new_key.replace("self_attn.o_proj", f"{attn_name}.to_out.0")
+
+        # MLP / FeedForward mappings
+        new_key = new_key.replace("mlp.gate_proj", "ff.net.0.proj")
+        new_key = new_key.replace("mlp.up_proj", "ff.net.0.proj")
+        new_key = new_key.replace("mlp.down_proj", "ff.net.2")
+        if "ff.net" not in new_key:
+            if "gate_proj" in new_key:
+                new_key = new_key.replace("gate_proj", "ff.net.0.proj")
+            if "up_proj" in new_key:
+                new_key = new_key.replace("up_proj", "ff.net.0.proj")
+            if "down_proj" in new_key:
+                new_key = new_key.replace("down_proj", "ff.net.2")
+
+        # Ensure attention naming alignment
         if ".attn." in new_key and attn_name != "attn":
             new_key = new_key.replace(".attn.", f".{attn_name}.")
 

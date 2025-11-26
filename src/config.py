@@ -44,7 +44,9 @@ class Config:
 
     cpu_offload: bool = _env_bool("CPU_OFFLOAD", False)
     enable_vae_tiling: bool = _env_bool("ENABLE_VAE_TILING", True)
-    enable_xformers: bool = _env_bool("ENABLE_XFORMERS", True)
+    # Default xFormers OFF because Qwen-Image passes image_rotary_emb to attention;
+    # xFormersAttnProcessor drops it and can crash with "not enough values to unpack".
+    enable_xformers: bool = _env_bool("ENABLE_XFORMERS", False)
 
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
